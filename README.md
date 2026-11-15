@@ -1,7 +1,10 @@
 # SHIKSHATRACK
 
-> **AI-Powered Smart Attendance and School Management System for Rural Schools**  
-> An Academic Major Project developed by three BTech Computer Science undergraduate students, practically demonstrating concepts from **Database Engineering (DE)**, **Application Software Development (ASD)**, and **Information Systems Development (ISD)**.
+> **AI-Powered Smart Attendance and School Management System for Rural Schools**
+
+## Live Demo
+
+- Deployed Application: https://shiksha-track-major-project-six.vercel.app/
 
 ---
 
@@ -73,10 +76,10 @@ All models are normalized in **Third Normal Form (3NF)**:
 4. `teacher_assignments`: Associative junction table resolving M:N faculty allocations.
 5. `students`: Enrolled students, admission numbers (unique per school), roll numbers, unique non-guessable `qrToken`s.
 6. `attendance_sessions`: Daily attendance session lifecycle (`OPEN` $\rightarrow$ `CLOSED`).
-7. `attendance_records`: Individual marked attendances with composite unique constraint `@@unique([sessionId, studentId])`, status (`PRESENT`, `ABSENT`, `LATE`), and method (`QR`, `MANUAL`, `OFFLINE_SYNC`).
+7. `attendance_records`: Individual marked attendances with composite unique constraint `@@unique([sessionId, studentId])`, status (`PRESENT`, `ABSENT`, `LATE`), and method (`QR`, `MANUAL`, `OFFLINE_SYNC`), plus metadata like `lateReason` and `deviceInfo`.
 8. `audit_logs`: Administrative modification audit trail recording `actorId`, `previousValue`, `newValue`, and mandatory `reason`.
 
-For complete details, see [docs/database-schema.md](file:///Users/shivrajbissa/ShikshaTrack/docs/database-schema.md), [docs/teacher-management-api.md](file:///Users/shivrajbissa/ShikshaTrack/docs/teacher-management-api.md), [docs/student-attendance-insights.md](file:///Users/shivrajbissa/ShikshaTrack/docs/student-attendance-insights.md), [docs/teacher-workload-analytics.md](file:///Users/shivrajbissa/ShikshaTrack/docs/teacher-workload-analytics.md), and [docs/school-notifications-and-alerts.md](file:///Users/shivrajbissa/ShikshaTrack/docs/school-notifications-and-alerts.md).
+For complete details, see [docs/database-schema.md](file:///Users/shivrajbissa/ShikshaTrack/docs/database-schema.md), [docs/teacher-management-api.md](file:///Users/shivrajbissa/ShikshaTrack/docs/teacher-management-api.md), [docs/architecture.md](file:///Users/shivrajbissa/ShikshaTrack/docs/architecture.md), and [docs/api-documentation.md](file:///Users/shivrajbissa/ShikshaTrack/docs/api-documentation.md).
 
 ---
 
@@ -197,16 +200,16 @@ All **21 automated tests** covering Authentication, Student CRUD, QR Attendance,
 
 Comprehensive academic documentation has been created inside `docs/`:
 
-- [docs/student-performance-and-early-intervention.md](file:///Users/shivrajbissa/ShikshaTrack/docs/student-performance-and-early-intervention.md): Student performance analytics, Pearson correlation ($r$) between attendance and marks, stratified risk scoring, and early academic intervention lifecycle.
-- [docs/student-document-and-certificate-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/student-document-and-certificate-management.md): Student digital document repository, multi-category records, version history, vector PDF certificate generation, and public QR verification engine.
-- [docs/offline-sync-and-recovery-engine.md](file:///Users/shivrajbissa/ShikshaTrack/docs/offline-sync-and-recovery-engine.md): Offline attendance sync engine, persistent operation queue, exponential backoff, conflict arbitration, and crash recovery.
-- [docs/parent-portal-and-school-communication.md](file:///Users/shivrajbissa/ShikshaTrack/docs/parent-portal-and-school-communication.md): Parent portal dashboard, multi-child linking, school-wide circulars, staff-to-guardian direct messaging, and student leave requests.
-- [docs/school-fee-and-financial-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/school-fee-and-financial-management.md): Fee structures, installment scheduling, atomic receipting, payment reversals, and financial reports.
-- [docs/attendance-analytics-and-intelligence.md](file:///Users/shivrajbissa/ShikshaTrack/docs/attendance-analytics-and-intelligence.md): Advanced attendance intelligence, predictive trends, truancy detection, and class benchmarks.
-- [docs/student-leave-and-discipline-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/student-leave-and-discipline-management.md): Student leave applications, approval workflows, attendance exemptions, and discipline/incident register.
-- [docs/examination-and-result-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/examination-and-result-management.md): Examination administration, subject marks entry, grading scale, and result exports.
+- [docs/student-performance-and-early-intervention.md](file:///Users/shivrajbissa/ShikshaTrack/docs/student-performance-and-early-intervention.md): Student performance analytics, Pearson correlation, and early intervention strategies.
+- [docs/student-document-and-certificate-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/student-document-and-certificate-management.md): Student digital document repository, multi-category document lifecycle, and verification workflows.
+- [docs/offline-sync-and-recovery-engine.md](file:///Users/shivrajbissa/ShikshaTrack/docs/offline-sync-and-recovery-engine.md): Offline attendance sync engine, persistent operation queue, exponential backoff, and recovery logic.
+- [docs/parent-portal-and-school-communication.md](file:///Users/shivrajbissa/ShikshaTrack/docs/parent-portal-and-school-communication.md): Parent portal dashboard, multi-child linking, school-wide communication, and engagement tracking.
+- [docs/school-fee-and-financial-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/school-fee-and-financial-management.md): Fee structures, installment scheduling, atomic receipting, payment reconciliation, and reminder systems.
+- [docs/attendance-analytics-and-intelligence.md](file:///Users/shivrajbissa/ShikshaTrack/docs/attendance-analytics-and-intelligence.md): Advanced attendance intelligence, predictive trends, truancy detection, and pattern scanning.
+- [docs/student-leave-and-discipline-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/student-leave-and-discipline-management.md): Student leave applications, approval workflows, attendance balancing, and disciplinary management.
+- [docs/examination-and-result-management.md](file:///Users/shivrajbissa/ShikshaTrack/docs/examination-and-result-management.md): Examination administration, subject marks entry, grading scale, and result analytics.
 - [docs/school-timetable-and-scheduling.md](file:///Users/shivrajbissa/ShikshaTrack/docs/school-timetable-and-scheduling.md): School timetable, period management, and faculty conflict detection.
-- [docs/school-notifications-and-alerts.md](file:///Users/shivrajbissa/ShikshaTrack/docs/school-notifications-and-alerts.md): School notifications, proactive attendance alerts, and dismissal lifecycle.
+- [docs/school-notifications-and-alerts.md](file:///Users/shivrajbissa/ShikshaTrack/docs/school-notifications-and-alerts.md): School notifications, proactive attendance alerts, and dismissal lifecycle management.
 - [docs/team-contribution-matrix.md](file:///Users/shivrajbissa/ShikshaTrack/docs/team-contribution-matrix.md): Cross-functional ownership mapping Member 1, Member 2, and Member 3 across DE, ASD, and ISD.
 - [docs/viva-preparation.md](file:///Users/shivrajbissa/ShikshaTrack/docs/viva-preparation.md): In-depth Q&A for DE, ASD, and ISD, plus 3 separate member practice defense sections.
 - [docs/asd-concept-mapping.md](file:///Users/shivrajbissa/ShikshaTrack/docs/asd-concept-mapping.md): Complete Node.js syllabus concept mapping with exact code references.
@@ -216,8 +219,7 @@ Comprehensive academic documentation has been created inside `docs/`:
 - [docs/database-schema.md](file:///Users/shivrajbissa/ShikshaTrack/docs/database-schema.md): 3NF schema specifications and relational integrity.
 - [docs/api-documentation.md](file:///Users/shivrajbissa/ShikshaTrack/docs/api-documentation.md): Full REST API endpoint reference.
 - [docs/user-guide.md](file:///Users/shivrajbissa/ShikshaTrack/docs/user-guide.md): Operational guide for administrators and teachers.
-- **SQL Demonstrations (`docs/sql-demonstrations/`):** 12 executable SQL files covering Lectures 0 through 12 (DDL, DML, DCL, TCL, built-in functions, grouping, window functions, subqueries, joins, normalization, and ACID transactions).
+- **SQL Demonstrations (`docs/sql-demonstrations/`):** 12 executable SQL files covering Lectures 0 through 12 (DDL, DML, DCL, TCL, built-in functions, grouping, window functions, subqueries, joins, and normalization examples).
 - **Runnable Educational Examples (`docs/examples/`):** Runnable scripts illustrating CommonJS vs ES Modules, EventEmitters, Streams, and Raw Node.js HTTP servers.
 
 ---
-
