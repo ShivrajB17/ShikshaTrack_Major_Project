@@ -29,7 +29,6 @@ import Analytics from './pages/Analytics';
 import AiInsights from './pages/AiInsights';
 import AiReportGenerator from './pages/AiReportGenerator';
 import OfflineSync from './pages/OfflineSync';
-import Settings from './pages/Settings';
 import ParentDashboard from './pages/ParentDashboard';
 import ParentCommunication from './pages/ParentCommunication';
 import ParentManagement from './pages/ParentManagement';
@@ -237,9 +236,6 @@ export default function App() {
 
               {/* Offline Sync Center */}
               <Route path="sync" element={<OfflineSync />} />
-
-              {/* Settings & Info */}
-              <Route path="settings" element={<Settings />} />
 
               {/* System Administration & Audit Dashboard (Admin only) */}
               <Route

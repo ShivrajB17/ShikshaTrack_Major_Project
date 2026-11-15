@@ -28,7 +28,6 @@ import {
   Menu,
   X,
   School,
-  Settings as SettingsIcon,
   MessageSquare,
   Heart,
   FileBadge,
@@ -87,7 +86,6 @@ export default function DashboardLayout() {
         { label: 'AI Report Generator', path: '/ai-reports', icon: FileSpreadsheet },
         { label: 'Offline Sync Center', path: '/sync', icon: CloudOff, badge: pendingCount },
         { label: 'System Administration', path: '/admin/system', icon: ShieldCheck },
-        { label: 'System Settings', path: '/settings', icon: SettingsIcon },
       ]
     : [
         { label: 'Teacher Dashboard', path: '/teacher/dashboard', icon: LayoutDashboard },

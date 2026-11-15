@@ -32,7 +32,7 @@ export const openDB = () => {
       }
     };
 
-    request.onsuccess = () => resolve(request.target.result);
+    request.onsuccess = (event) => resolve(event.target.result);
     request.onerror = () => reject(request.error);
   });
 };
