@@ -3,6 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Html5Qrcode } from 'html5-qrcode';
 import api from '../services/api';
 import { useOffline } from '../context/OfflineContext';
+import { getAllQueueEvents } from '../services/db';
 import {
   ScanLine,
   Camera,
@@ -20,6 +21,78 @@ import {
   Image as ImageIcon,
 } from 'lucide-react';
 
+/**
+ * Pure duplicate checker for session attendance and pending offline queue.
+ * Exported for comprehensive regression testing.
+ */
+export const checkAttendanceDuplicate = ({
+  studentId,
+  qrToken,
+  classId,
+  session,
+  queueEvents = [],
+  processedSet = null,
+}) => {
+  // 1. Check in-memory fast session set
+  if (processedSet) {
+    if (studentId && processedSet.has(studentId)) {
+      return { isDuplicate: true, reason: 'ALREADY_PROCESSED_IN_MEMORY' };
+    }
+    if (qrToken && processedSet.has(qrToken)) {
+      return { isDuplicate: true, reason: 'ALREADY_PROCESSED_IN_MEMORY' };
+    }
+  }
+
+  // 2. Check current session's attendance records (online or cached session)
+  const sessionRecords = session?.attendanceRecords || [];
+  const foundInSession = sessionRecords.find(
+    (r) =>
+      (studentId && r.studentId === studentId) ||
+      (qrToken && r.student?.qrToken === qrToken) ||
+      (qrToken && r.qrToken === qrToken)
+  );
+  if (foundInSession) {
+    return {
+      isDuplicate: true,
+      reason: 'ALREADY_RECORDED_IN_SESSION',
+      existingRecord: foundInSession,
+    };
+  }
+
+  // 3. Check pending IndexedDB sync queue (offline records queued for this class/session)
+  if (Array.isArray(queueEvents)) {
+    const foundInQueue = queueEvents.find((item) => {
+      // Must not be a failed record requiring recovery
+      if (item.queueStatus === 'FAILED' || item.status === 'FAILED') return false;
+
+      // Check student match
+      const studentMatch =
+        (studentId && item.studentId === studentId) ||
+        (qrToken && item.qrToken === qrToken);
+      if (!studentMatch) return false;
+
+      // Check session or class match
+      if (session?.id && item.sessionId && item.sessionId === session.id) {
+        return true;
+      }
+      if (classId && item.classId && item.classId === classId) {
+        return true;
+      }
+      return false;
+    });
+
+    if (foundInQueue) {
+      return {
+        isDuplicate: true,
+        reason: 'ALREADY_QUEUED_OFFLINE',
+        existingRecord: foundInQueue,
+      };
+    }
+  }
+
+  return { isDuplicate: false };
+};
+
 export default function QrAttendanceScanner() {
   const [searchParams] = useSearchParams();
   const initialClassId = searchParams.get('classId') || '';
@@ -35,12 +108,17 @@ export default function QrAttendanceScanner() {
   const [manualTokenInput, setManualTokenInput] = useState('');
   const [loading, setLoading] = useState(true);
 
-  const { isOnline, recordOfflineAttendance, getOfflineRoster } = useOffline();
+  const { isOnline, recordOfflineAttendance, getOfflineRoster, queueItems } = useOffline();
   const html5QrCodeRef = useRef(null);
   const fileInputRef = useRef(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const scannerContainerId = 'qr-reader-viewport';
+
+  // In-flight locking and session duplicate tracking refs
+  const isProcessingRef = useRef(false);
+  const processedStudentsRef = useRef(new Set());
+  const recentScanCooldownRef = useRef(new Map());
 
   // 1. Fetch Teacher's Assigned Classes
   useEffect(() => {
@@ -69,11 +147,26 @@ export default function QrAttendanceScanner() {
       const res = await api.post('/attendance/sessions/start', {
         classId: selectedClassId,
       });
-      setSession(res.data);
+      const sessionData = res.data;
 
       // Fetch session details and roster
-      const detailsRes = await api.get(`/attendance/sessions/${res.data.id}`);
+      const detailsRes = await api.get(`/attendance/sessions/${sessionData.id}`);
       setRosterStats(detailsRes.data.stats);
+
+      const fullSession = {
+        ...sessionData,
+        attendanceRecords: detailsRes.data.attendanceRecords || sessionData.attendanceRecords || [],
+      };
+      setSession(fullSession);
+
+      // Hydrate processed set from active session records
+      if (Array.isArray(fullSession.attendanceRecords)) {
+        fullSession.attendanceRecords.forEach((r) => {
+          if (r.studentId) processedStudentsRef.current.add(r.studentId);
+          if (r.student?.qrToken) processedStudentsRef.current.add(r.student.qrToken);
+          if (r.qrToken) processedStudentsRef.current.add(r.qrToken);
+        });
+      }
     } catch (err) {
       console.warn('Could not load live session, checking offline roster:', err.message);
       // Fallback to offline roster if offline
@@ -84,6 +177,7 @@ export default function QrAttendanceScanner() {
           classId: selectedClassId,
           className: offlineRoster.className,
           status: 'OPEN (OFFLINE)',
+          attendanceRecords: [],
         });
         setRosterStats({
           totalStudents: offlineRoster.students.length,
@@ -92,9 +186,29 @@ export default function QrAttendanceScanner() {
         });
       }
     }
+
+    // Hydrate processed set from pending offline queue records for this class
+    try {
+      const queue = await getAllQueueEvents();
+      queue.forEach((item) => {
+        if (
+          item.classId === selectedClassId &&
+          item.queueStatus !== 'FAILED' &&
+          item.status !== 'FAILED'
+        ) {
+          if (item.studentId) processedStudentsRef.current.add(item.studentId);
+          if (item.qrToken) processedStudentsRef.current.add(item.qrToken);
+        }
+      });
+    } catch (qErr) {
+      console.warn('Could not read offline queue for duplicate seeding:', qErr);
+    }
   };
 
   useEffect(() => {
+    // Reset session processed set when class changes
+    processedStudentsRef.current.clear();
+    recentScanCooldownRef.current.clear();
     loadSession();
   }, [selectedClassId]);
 
@@ -105,8 +219,11 @@ export default function QrAttendanceScanner() {
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
 
-      osc.type = type === 'success' ? 'sine' : 'sawtooth';
-      osc.frequency.setValueAtTime(type === 'success' ? 880 : 300, audioCtx.currentTime);
+      osc.type = type === 'success' ? 'sine' : type === 'warning' ? 'triangle' : 'sawtooth';
+      osc.frequency.setValueAtTime(
+        type === 'success' ? 880 : type === 'warning' ? 520 : 300,
+        audioCtx.currentTime
+      );
       gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
 
@@ -124,14 +241,74 @@ export default function QrAttendanceScanner() {
     if (!qrToken || !qrToken.trim()) return;
     const token = qrToken.trim();
 
+    // 1. In-flight lock: drop frame if another scan is actively being processed
+    if (isProcessingRef.current) {
+      return;
+    }
+
+    // 2. Cooldown check: ignore repeated frame callbacks for the same token within 2.5s
+    const now = Date.now();
+    const lastScan = recentScanCooldownRef.current.get(token) || 0;
+    if (now - lastScan < 2500) {
+      return;
+    }
+
+    // 3. In-memory session check: if token is already marked in this session
+    if (processedStudentsRef.current.has(token)) {
+      recentScanCooldownRef.current.set(token, now);
+      playBeep('warning');
+      setFeedback({
+        type: 'warning',
+        message: 'This student is already marked for this session!',
+      });
+      return;
+    }
+
+    // Acquire in-flight lock
+    isProcessingRef.current = true;
+    recentScanCooldownRef.current.set(token, now);
+
     try {
+      // Query latest offline queue state to prevent cross-call races
+      let latestQueue = [];
+      try {
+        latestQueue = await getAllQueueEvents();
+      } catch (e) {
+        latestQueue = queueItems || [];
+      }
+
       if (isOnline && session?.id && !session.id.startsWith('offline')) {
+        // ONLINE FLOW:
+        const dupCheck = checkAttendanceDuplicate({
+          qrToken: token,
+          classId: selectedClassId,
+          session,
+          queueEvents: latestQueue,
+          processedSet: processedStudentsRef.current,
+        });
+
+        if (dupCheck.isDuplicate) {
+          processedStudentsRef.current.add(token);
+          playBeep('warning');
+          setFeedback({
+            type: 'warning',
+            message: 'This student is already marked for this session!',
+          });
+          return;
+        }
+
         // Send to online backend
         const res = await api.post('/attendance/scan', {
           sessionId: session.id,
           qrToken: token,
           status: scanStatus,
         });
+
+        // Immediately prevent repeat scans of this student and token
+        if (res.data?.student?.id) {
+          processedStudentsRef.current.add(res.data.student.id);
+        }
+        processedStudentsRef.current.add(token);
 
         playBeep('success');
         setFeedback({
@@ -141,9 +318,9 @@ export default function QrAttendanceScanner() {
         });
 
         // Refresh stats
-        loadSession();
+        await loadSession();
       } else {
-        // OFFLINE MODE: Resolve from local IndexedDB
+        // OFFLINE FLOW: Resolve from local IndexedDB
         const offlineRoster = await getOfflineRoster(selectedClassId);
         if (!offlineRoster) {
           throw new Error('No offline roster found for this class. Please download it while online.');
@@ -154,12 +331,54 @@ export default function QrAttendanceScanner() {
           throw new Error('QR Token not found in local offline roster for this class.');
         }
 
+        // Check duplicate against student ID, token, session, and queue
+        const dupCheck = checkAttendanceDuplicate({
+          studentId: student.id,
+          qrToken: token,
+          classId: selectedClassId,
+          session,
+          queueEvents: latestQueue,
+          processedSet: processedStudentsRef.current,
+        });
+
+        if (dupCheck.isDuplicate) {
+          processedStudentsRef.current.add(student.id);
+          processedStudentsRef.current.add(token);
+          playBeep('warning');
+          setFeedback({
+            type: 'warning',
+            message: `[ALREADY MARKED] ${student.name} is already recorded for this session!`,
+            student,
+          });
+          return;
+        }
+
+        // Record offline attendance with guaranteed preservation of status
         await recordOfflineAttendance({
           sessionId: session?.id,
           classId: selectedClassId,
           studentId: student.id,
           qrToken: token,
           status: scanStatus,
+        });
+
+        // Immediately protect student and token from duplicate scanning
+        processedStudentsRef.current.add(student.id);
+        processedStudentsRef.current.add(token);
+
+        // Optimistically update session stats
+        setRosterStats((prev) => {
+          if (!prev) return prev;
+          const newPresent = (prev.presentCount || 0) + 1;
+          const newUnmarked = Math.max(0, (prev.unmarkedCount || 0) - 1);
+          const total = prev.totalStudents || (newPresent + newUnmarked);
+          const rate = total > 0 ? Math.round((newPresent / total) * 100) : 0;
+          return {
+            ...prev,
+            presentCount: newPresent,
+            unmarkedCount: newUnmarked,
+            attendanceRate: rate,
+          };
         });
 
         playBeep('success');
@@ -175,6 +394,10 @@ export default function QrAttendanceScanner() {
         type: 'error',
         message: err.message || 'Scan rejected.',
       });
+      // NOTICE: Do not add to processedStudentsRef on error, allowing immediate retry
+    } finally {
+      // Release in-flight lock
+      isProcessingRef.current = false;
     }
   };
 
@@ -195,6 +418,8 @@ export default function QrAttendanceScanner() {
         { facingMode: 'environment' },
         config,
         (decodedText) => {
+          // Synchronous fast guard to immediately drop camera frames while a scan is in-flight
+          if (isProcessingRef.current) return;
           processQrToken(decodedText);
         },
         () => {

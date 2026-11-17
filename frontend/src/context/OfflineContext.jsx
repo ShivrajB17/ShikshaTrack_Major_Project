@@ -1,22 +1,20 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
 import {
   saveOfflineRoster,
   getOfflineRoster,
   listOfflineRosters,
-  enqueueOfflineEvent,
-  getUnsyncedEvents,
   getAllQueueEvents,
-  updateOfflineEventStatus,
-  markEventsSynced,
   saveConflictRecord,
 } from '../services/db';
+import {
+  createShikshaSyncClient,
+  ATTENDANCE_STATUSES,
+} from '../services/shikshatrackSyncAdapter';
 
 const OfflineContext = createContext(null);
 
-const MAX_AUTO_RETRIES = 5;
-
-export const OfflineProvider = ({ children }) => {
+export const OfflineProvider = ({ client: propClient, children }) => {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [pendingCount, setPendingCount] = useState(0);
   const [failedCount, setFailedCount] = useState(0);
@@ -30,15 +28,44 @@ export const OfflineProvider = ({ children }) => {
   const [savedRosters, setSavedRosters] = useState([]);
   const [queueItems, setQueueItems] = useState([]);
 
+  // Stable client ownership across React StrictMode cycles (setup -> cleanup -> setup)
+  const internalClientRef = useRef(null);
+  if (!internalClientRef.current || (internalClientRef.current.isDestroyed && internalClientRef.current.isDestroyed())) {
+    internalClientRef.current = createShikshaSyncClient();
+  }
+  const syncClient = propClient || internalClientRef.current;
+
   // Refresh status from IndexedDB
   const refreshStatus = useCallback(async () => {
     try {
       const allQueue = await getAllQueueEvents();
-      setQueueItems(allQueue);
 
-      const unsynced = allQueue.filter((item) => item.status === 'PENDING' || !item.synced);
-      const failed = allQueue.filter((item) => item.status === 'FAILED');
-      const conflicts = allQueue.filter((item) => item.status === 'CONFLICT');
+      // Normalize items for UI display: separate attendance status from queue state
+      const formattedItems = allQueue.map((item) => {
+        const isAtt = typeof item.status === 'string' && ATTENDANCE_STATUSES.has(item.status.toUpperCase());
+        const attStatus = isAtt
+          ? item.status.toUpperCase()
+          : (item.attendanceStatus || (item.requiresManualResolution ? 'UNVERIFIED' : item.status));
+        const qStatus = item.queueStatus || (item.synced ? 'SYNCED' : (item.status === 'FAILED' ? 'FAILED' : (item.status === 'CONFLICT' ? 'CONFLICT' : 'PENDING')));
+
+        return {
+          ...item,
+          attendanceStatus: attStatus,
+          queueStatus: qStatus,
+          // Column 3 in OfflineSync table renders 'status'; ensure it displays attendance status
+          status: attStatus,
+        };
+      });
+
+      setQueueItems(formattedItems);
+
+      const unsynced = formattedItems.filter(
+        (item) => item.queueStatus === 'PENDING' && !item.synced && !item.requiresManualResolution
+      );
+      const failed = formattedItems.filter(
+        (item) => item.queueStatus === 'FAILED' || item.requiresManualResolution
+      );
+      const conflicts = formattedItems.filter((item) => item.queueStatus === 'CONFLICT');
 
       setPendingCount(unsynced.length);
       setFailedCount(failed.length);
@@ -51,150 +78,129 @@ export const OfflineProvider = ({ children }) => {
     }
   }, []);
 
-  // Sync batch with exponential backoff
-  const syncPendingQueue = useCallback(async (isManualRetry = false) => {
-    if (isSyncing || !navigator.onLine) return;
+  // Synchronize queue via offline-sync-kit
+  const syncPendingQueue = useCallback(
+    async (isManualRetry = false) => {
+      if (isSyncing || !navigator.onLine) return;
 
-    try {
-      setIsSyncing(true);
-      const allQueue = await getAllQueueEvents();
-      const eventsToSync = allQueue.filter(
-        (item) => item.status === 'PENDING' || (isManualRetry && item.status === 'FAILED')
-      );
+      try {
+        setIsSyncing(true);
 
-      if (eventsToSync.length === 0) {
-        setIsSyncing(false);
-        return;
-      }
+        const summary = isManualRetry
+          ? await syncClient.retryFailed()
+          : await syncClient.syncNow();
 
-      setSyncProgress({ current: 0, total: eventsToSync.length });
+        if (summary) {
+          const nowIso = new Date().toISOString();
+          setLastSyncTimestamp(nowIso);
+          localStorage.setItem('shiksha_last_sync', nowIso);
 
-      // Mark items as SYNCING in IndexedDB
-      await Promise.all(
-        eventsToSync.map((e) =>
-          updateOfflineEventStatus(e.eventId, { status: 'SYNCING' })
-        )
-      );
-
-      // Transmit batch
-      const res = await api.post('/sync/batch', {
-        events: eventsToSync.map((e) => ({
-          operationId: e.operationId || e.eventId,
-          eventId: e.eventId,
-          classId: e.classId,
-          studentId: e.studentId,
-          qrToken: e.qrToken,
-          status: e.status || 'PRESENT',
-          timestamp: e.timestamp,
-          remarks: e.remarks,
-          retryCount: e.retryCount || 0,
-        })),
-      });
-
-      const data = res.data;
-      const results = data.results || [];
-
-      // Update per-operation states
-      const syncedIds = [];
-      for (const r of results) {
-        const matchingEvent = eventsToSync.find(
-          (e) => e.eventId === r.eventId || e.operationId === r.operationId
-        );
-        if (!matchingEvent) continue;
-
-        if (r.success) {
-          if (r.hasConflict && !r.conflictResolved) {
-            await updateOfflineEventStatus(matchingEvent.eventId, {
-              status: 'CONFLICT',
-              conflictData: {
-                currentStatus: r.currentStatus,
-                requestedStatus: matchingEvent.status,
-                recordId: r.recordId,
-              },
-            });
-            await saveConflictRecord({
-              id: r.conflictId || matchingEvent.eventId,
-              eventId: matchingEvent.eventId,
-              studentName: r.studentName,
-              currentStatus: r.currentStatus,
-              requestedStatus: matchingEvent.status,
-              timestamp: new Date().toISOString(),
-            });
-          } else {
-            syncedIds.push(matchingEvent.eventId);
-          }
-        } else {
-          // Failure handling with retry count
-          const nextRetry = (matchingEvent.retryCount || 0) + 1;
-          await updateOfflineEventStatus(matchingEvent.eventId, {
-            status: nextRetry >= MAX_AUTO_RETRIES ? 'FAILED' : 'PENDING',
-            retryCount: nextRetry,
-            lastError: r.error || 'Sync transmission failed',
+          setLastSyncResult({
+            timestamp: new Date().toLocaleTimeString(),
+            syncedCount: summary.syncedCount,
+            duplicatesCount: summary.duplicatesCount,
+            conflictsCount: summary.conflictsCount,
+            conflictsResolvedCount: 0,
+            failedCount: summary.failedCount,
           });
         }
+      } catch (err) {
+        console.error('Offline synchronization failed:', err);
+      } finally {
+        setIsSyncing(false);
+        setSyncProgress({ current: 0, total: 0 });
+        await refreshStatus();
       }
+    },
+    [isSyncing, syncClient, refreshStatus]
+  );
 
-      if (syncedIds.length > 0) {
-        await markEventsSynced(syncedIds);
-      }
-
-      const nowIso = new Date().toISOString();
-      setLastSyncTimestamp(nowIso);
-      localStorage.setItem('shiksha_last_sync', nowIso);
-
-      setLastSyncResult({
-        timestamp: new Date().toLocaleTimeString(),
-        syncedCount: data.syncedCount,
-        duplicatesCount: data.duplicatesCount,
-        conflictsCount: data.conflictsCount,
-        conflictsResolvedCount: data.conflictsResolvedCount,
-        failedCount: data.failedCount,
-      });
-
-      await refreshStatus();
-    } catch (err) {
-      console.error('Offline synchronization failed:', err);
-      // Revert SYNCING to FAILED/PENDING
-      const allQueue = await getAllQueueEvents();
-      await Promise.all(
-        allQueue
-          .filter((item) => item.status === 'SYNCING')
-          .map((item) =>
-            updateOfflineEventStatus(item.eventId, {
-              status: (item.retryCount || 0) + 1 >= MAX_AUTO_RETRIES ? 'FAILED' : 'PENDING',
-              retryCount: (item.retryCount || 0) + 1,
-              lastError: err.message,
-            })
-          )
-      );
-    } finally {
-      setIsSyncing(false);
-      setSyncProgress({ current: 0, total: 0 });
-    }
-  }, [isSyncing, refreshStatus]);
-
-  // Network connection listeners
+  // Wire offline-sync-kit events with StrictMode-safe lifecycle
   useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true);
-      // Auto-trigger sync when connectivity returns
-      syncPendingQueue();
-    };
+    let mounted = true;
 
-    const handleOffline = () => {
-      setIsOnline(false);
-    };
+    // Never subscribe to a destroyed client
+    if (syncClient.isDestroyed && syncClient.isDestroyed()) {
+      return;
+    }
 
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
+    // Retain lease for active mount
+    if (syncClient.retain) {
+      syncClient.retain();
+    }
+
+    const unsubStart = syncClient.on('sync:start', (data) => {
+      if (mounted) {
+        setIsSyncing(true);
+        setSyncProgress({ current: 0, total: data.count });
+      }
+    });
+
+    const unsubProgress = syncClient.on('sync:progress', (data) => {
+      if (mounted) {
+        setSyncProgress({ current: data.current, total: data.total });
+      }
+    });
+
+    const unsubSuccess = syncClient.on('sync:success', () => {
+      if (mounted) {
+        setIsSyncing(false);
+        refreshStatus();
+      }
+    });
+
+    const unsubError = syncClient.on('sync:error', () => {
+      if (mounted) {
+        setIsSyncing(false);
+        refreshStatus();
+      }
+    });
+
+    const unsubQueue = syncClient.on('queue:change', () => {
+      if (mounted) {
+        refreshStatus();
+      }
+    });
+
+    const unsubConflict = syncClient.on('operation:conflict', async ({ operation, conflictDetails }) => {
+      if (mounted && conflictDetails) {
+        const details = conflictDetails;
+        await saveConflictRecord({
+          id: details.conflictId || String(operation.metadata.id),
+          eventId: String(operation.metadata.id),
+          studentName: details.studentName || 'Student',
+          currentStatus: details.currentStatus || 'PRESENT',
+          requestedStatus: operation.payload?.attendanceStatus || 'PRESENT',
+          timestamp: new Date().toISOString(),
+        });
+        refreshStatus();
+      }
+    });
+
+    const unsubNetwork = syncClient.on('network:change', ({ isOnline: online }) => {
+      if (mounted) {
+        setIsOnline(online);
+      }
+    });
 
     refreshStatus();
 
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
+      mounted = false;
+      unsubStart();
+      unsubProgress();
+      unsubSuccess();
+      unsubError();
+      unsubQueue();
+      unsubConflict();
+      unsubNetwork();
+
+      // Release lease; defers destruction so React StrictMode remount remains valid
+      if (!propClient && syncClient.release) {
+        syncClient.release();
+      }
     };
-  }, [syncPendingQueue, refreshStatus]);
+  }, [syncClient, propClient, refreshStatus]);
 
   // Download class roster into IndexedDB
   const downloadClassRoster = async (classId) => {
@@ -204,11 +210,37 @@ export const OfflineProvider = ({ children }) => {
     return res.data;
   };
 
-  // Record attendance offline
+  // Record attendance offline with guaranteed attendanceStatus preservation
   const recordOfflineAttendance = async (attendanceEvent) => {
-    const item = await enqueueOfflineEvent(attendanceEvent);
+    const eventId = `offline-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const attStatus = attendanceEvent.status && ATTENDANCE_STATUSES.has(attendanceEvent.status.toUpperCase())
+      ? attendanceEvent.status.toUpperCase()
+      : 'PRESENT';
+
+    await syncClient.enqueue(
+      'ATTENDANCE_SCAN',
+      {
+        ...attendanceEvent,
+        attendanceStatus: attStatus,
+        status: attStatus,
+      },
+      {
+        id: eventId,
+        idempotencyKey: eventId,
+        createdAt: new Date().toISOString(),
+      }
+    );
+
     await refreshStatus();
-    return item;
+    return {
+      eventId,
+      operationId: eventId,
+      ...attendanceEvent,
+      status: attStatus,
+      attendanceStatus: attStatus,
+      queueStatus: 'PENDING',
+      synced: false,
+    };
   };
 
   // Retry failed queue items manually

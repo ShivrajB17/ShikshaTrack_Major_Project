@@ -236,8 +236,8 @@ export default function OfflineSync() {
                       <td className="py-3 px-4 text-slate-500 text-[11px]">{new Date(e.timestamp).toLocaleTimeString()}</td>
                       <td className="py-3 px-4 text-slate-500">{e.retryCount || 0} / 5</td>
                       <td className="py-3 px-4 text-right">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${e.status === 'SYNCED' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : e.status === 'FAILED' ? 'bg-rose-50 text-rose-700 border border-rose-200' : e.status === 'CONFLICT' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-sky-50 text-sky-700 border border-sky-200'}`}>
-                          {e.status || 'PENDING'}
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${(e.queueStatus || e.status) === 'SYNCED' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : (e.queueStatus || e.status) === 'FAILED' ? 'bg-rose-50 text-rose-700 border border-rose-200' : (e.queueStatus || e.status) === 'CONFLICT' ? 'bg-amber-50 text-amber-700 border border-amber-200' : 'bg-sky-50 text-sky-700 border border-sky-200'}`}>
+                          {e.queueStatus || e.status || 'PENDING'}
                         </span>
                       </td>
                     </tr>
